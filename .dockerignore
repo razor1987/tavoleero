@@ -1,0 +1,5 @@
+.git/
+sync.sh
+deploy.sh
+README.md
+.gitignore
