@@ -4360,6 +4360,21 @@ function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
 // ../node_modules/@hatch/space-sdk/dist/server-contract.js
+var PRIVILEGED_CONTRACT_BRAND = "@hatch/space-sdk/privileged-contract/v1";
+function definePrivilegedContracts(specs) {
+  const contracts = {};
+  for (const [name, spec] of Object.entries(specs)) {
+    contracts[name] = {
+      __brand: PRIVILEGED_CONTRACT_BRAND,
+      name,
+      request: spec.request,
+      response: spec.response,
+      ...spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {},
+      ...spec.timeoutMs !== undefined ? { timeoutMs: spec.timeoutMs } : {}
+    };
+  }
+  return contracts;
+}
 var ACTION_BRAND = "@hatch/space-sdk/action/v1";
 var LEGACY_ACTION_BRAND = Symbol.for("@hatch/space-sdk/action");
 function createDefineAction() {
@@ -5006,6 +5021,23 @@ function and(...unfilteredConditions) {
 var gt = (left, right) => {
   return sql`${left} > ${bindIfParam(right, left)}`;
 };
+function isNull(value) {
+  return sql`${value} is null`;
+}
+
+// .generated/privileged.contract.ts
+var privileged = definePrivilegedContracts({
+  sendTavoleeroEmail: {
+    request: object({
+      to: string2().email(),
+      displayName: string2(),
+      purpose: _enum(["verify", "reset"]),
+      token: string2()
+    }),
+    response: object({ sent: boolean2() }),
+    timeoutMs: 30000
+  }
+});
 
 // ../node_modules/drizzle-orm/sqlite-core/foreign-keys.js
 class ForeignKeyBuilder {
@@ -5587,7 +5619,7 @@ function index(name) {
 var accessState = sqliteTable("access_state", {
   id: integer2("id").primaryKey().default(1),
   mode: text("mode", { enum: ["free", "premium"] }).notNull(),
-  theme: text("theme", { enum: ["classic", "neon", "fresh", "midnight"] }).notNull().default("classic"),
+  theme: text("theme", { enum: ["classic", "neon", "fresh", "midnight"] }).notNull().default("neon"),
   updatedAt: integer2("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date)
 });
 var users = sqliteTable("users", {
@@ -5597,6 +5629,7 @@ var users = sqliteTable("users", {
   passwordHash: text("password_hash").notNull(),
   passwordSalt: text("password_salt").notNull(),
   premium: integer2("premium", { mode: "boolean" }).notNull().default(false),
+  emailVerified: integer2("email_verified", { mode: "boolean" }).notNull().default(false),
   createdAt: integer2("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date),
   updatedAt: integer2("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date)
 });
@@ -5606,6 +5639,15 @@ var sessions = sqliteTable("sessions", {
   expiresAt: integer2("expires_at", { mode: "timestamp_ms" }).notNull(),
   createdAt: integer2("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date)
 }, (table) => [index("sessions_user_id_idx").on(table.userId)]);
+var emailTokens = sqliteTable("email_tokens", {
+  id: integer2("id").primaryKey({ autoIncrement: true }),
+  userId: integer2("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  purpose: text("purpose", { enum: ["verify", "reset"] }).notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: integer2("expires_at", { mode: "timestamp_ms" }).notNull(),
+  usedAt: integer2("used_at", { mode: "timestamp_ms" }),
+  createdAt: integer2("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date)
+}, (table) => [index("email_tokens_user_id_idx").on(table.userId), index("email_tokens_purpose_idx").on(table.purpose)]);
 var premiumActivations = sqliteTable("premium_activations", {
   id: integer2("id").primaryKey({ autoIncrement: true }),
   userId: integer2("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -5618,9 +5660,11 @@ var accessMode = _enum(["free", "premium"]);
 var themeMode = _enum(["classic", "neon", "fresh", "midnight"]);
 var accessResponse = object({ selected: boolean2(), mode: accessMode, updatedAt: string2().nullable() });
 var themeResponse = object({ theme: themeMode });
-var userShape = object({ id: number2(), displayName: string2(), email: string2(), premium: boolean2() });
+var userShape = object({ id: number2(), displayName: string2(), email: string2(), premium: boolean2(), emailVerified: boolean2() });
 var authResponse = object({ ok: boolean2(), token: string2().nullable(), user: userShape.nullable(), error: string2().nullable() });
+var registerResponse = authResponse.extend({ verificationSent: boolean2() });
 var sessionRequest = object({ token: string2().min(16).nullable() });
+var simpleResult = object({ ok: boolean2(), error: string2().nullable() });
 var encoder = new TextEncoder;
 function bytesToHex(bytes) {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
@@ -5653,13 +5697,24 @@ async function sessionUser(ctx, token) {
   if (!token)
     return null;
   const db = ctx.db();
-  const tokenHash = await sha256(token);
-  const rows = await db.select({ userId: sessions.userId }).from(sessions).where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, new Date))).limit(1);
+  const rows = await db.select({ userId: sessions.userId }).from(sessions).where(and(eq(sessions.tokenHash, await sha256(token)), gt(sessions.expiresAt, new Date))).limit(1);
   const session = rows[0];
   if (!session)
     return null;
-  const users2 = await db.select({ id: users.id, displayName: users.displayName, email: users.email, premium: users.premium }).from(users).where(eq(users.id, session.userId)).limit(1);
+  const users2 = await db.select({ id: users.id, displayName: users.displayName, email: users.email, premium: users.premium, emailVerified: users.emailVerified }).from(users).where(eq(users.id, session.userId)).limit(1);
   return users2[0] ?? null;
+}
+async function createEmailToken(ctx, userId, purpose, lifetimeMs) {
+  const db = ctx.db();
+  const now = new Date;
+  await db.update(emailTokens).set({ usedAt: now }).where(and(eq(emailTokens.userId, userId), eq(emailTokens.purpose, purpose), isNull(emailTokens.usedAt)));
+  const token = randomHex(32);
+  await db.insert(emailTokens).values({ userId, purpose, tokenHash: await sha256(token), expiresAt: new Date(now.getTime() + lifetimeMs), usedAt: null, createdAt: now });
+  return token;
+}
+async function sendTavoleeroEmail(ctx, input) {
+  const result = await ctx.executePrivileged(privileged.sendTavoleeroEmail, input);
+  return result.sent;
 }
 var Actions = {
   getAccess: defineAction({
@@ -5681,7 +5736,7 @@ var Actions = {
     response: themeResponse,
     async handler(ctx) {
       const rows = await ctx.db().select({ theme: accessState.theme }).from(accessState).where(eq(accessState.id, 1)).limit(1);
-      return { theme: rows[0]?.theme ?? "classic" };
+      return { theme: rows[0]?.theme ?? "neon" };
     }
   }),
   setTheme: defineAction({
@@ -5696,22 +5751,26 @@ var Actions = {
   }),
   register: defineAction({
     request: object({ displayName: string2().trim().min(2).max(40), email: string2().trim().email().max(160), password: string2().min(8).max(100) }),
-    response: authResponse,
+    response: registerResponse,
+    privileged: [privileged.sendTavoleeroEmail],
     async handler(ctx, args) {
       const db = ctx.db();
       const email = cleanEmail(args.email);
       const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
       if (existing[0])
-        return { ok: false, token: null, user: null, error: "Esiste gi\xE0 un account con questa email." };
+        return { ok: false, token: null, user: null, error: "Esiste gi\xE0 un account con questa email.", verificationSent: false };
       const salt = randomHex(16);
       const now = new Date;
-      const inserted = await db.insert(users).values({ displayName: args.displayName.trim(), email, passwordHash: await passwordHash(args.password, salt), passwordSalt: salt, premium: false, createdAt: now, updatedAt: now }).returning({ id: users.id });
+      const displayName = args.displayName.trim();
+      const inserted = await db.insert(users).values({ displayName, email, passwordHash: await passwordHash(args.password, salt), passwordSalt: salt, premium: false, emailVerified: false, createdAt: now, updatedAt: now }).returning({ id: users.id });
       const id = inserted[0]?.id;
       if (!id)
-        return { ok: false, token: null, user: null, error: "Non \xE8 stato possibile creare l\u2019account." };
-      const token = await createSession(ctx, id);
+        return { ok: false, token: null, user: null, error: "Non \xE8 stato possibile creare l\u2019account.", verificationSent: false };
+      const sessionToken = await createSession(ctx, id);
+      const verificationToken = await createEmailToken(ctx, id, "verify", 24 * 60 * 60 * 1000);
+      const verificationSent = await sendTavoleeroEmail(ctx, { to: email, displayName, purpose: "verify", token: verificationToken });
       ctx.invalidateQueries();
-      return { ok: true, token, user: { id, displayName: args.displayName.trim(), email, premium: false }, error: null };
+      return { ok: true, token: sessionToken, user: { id, displayName, email, premium: false, emailVerified: false }, error: null, verificationSent };
     }
   }),
   login: defineAction({
@@ -5725,7 +5784,7 @@ var Actions = {
       if (!user || await passwordHash(args.password, user.passwordSalt) !== user.passwordHash)
         return { ok: false, token: null, user: null, error: "Email o password non corretti." };
       const token = await createSession(ctx, user.id);
-      return { ok: true, token, user: { id: user.id, displayName: user.displayName, email: user.email, premium: user.premium }, error: null };
+      return { ok: true, token, user: { id: user.id, displayName: user.displayName, email: user.email, premium: user.premium, emailVerified: user.emailVerified }, error: null };
     }
   }),
   getSession: defineAction({
@@ -5742,6 +5801,75 @@ var Actions = {
       await ctx.db().delete(sessions).where(eq(sessions.tokenHash, await sha256(args.token)));
       ctx.invalidateQueries();
       return { ok: true };
+    }
+  }),
+  resendVerification: defineAction({
+    request: object({ token: string2().min(16) }),
+    response: object({ ok: boolean2(), emailSent: boolean2(), error: string2().nullable() }),
+    privileged: [privileged.sendTavoleeroEmail],
+    async handler(ctx, args) {
+      const user = await sessionUser(ctx, args.token);
+      if (!user)
+        return { ok: false, emailSent: false, error: "Accedi di nuovo per continuare." };
+      if (user.emailVerified)
+        return { ok: true, emailSent: false, error: null };
+      const verificationToken = await createEmailToken(ctx, user.id, "verify", 24 * 60 * 60 * 1000);
+      const emailSent = await sendTavoleeroEmail(ctx, { to: user.email, displayName: user.displayName, purpose: "verify", token: verificationToken });
+      return { ok: true, emailSent, error: null };
+    }
+  }),
+  verifyEmail: defineAction({
+    request: object({ token: string2().min(1) }),
+    response: simpleResult,
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const now = new Date;
+      const rows = await db.select({ id: emailTokens.id, userId: emailTokens.userId }).from(emailTokens).where(and(eq(emailTokens.tokenHash, await sha256(args.token)), eq(emailTokens.purpose, "verify"), gt(emailTokens.expiresAt, now), isNull(emailTokens.usedAt))).limit(1);
+      const match = rows[0];
+      if (!match)
+        return { ok: false, error: "Link non valido o scaduto." };
+      const consumed = await db.update(emailTokens).set({ usedAt: now }).where(and(eq(emailTokens.id, match.id), isNull(emailTokens.usedAt))).returning({ id: emailTokens.id });
+      if (!consumed[0])
+        return { ok: false, error: "Link non valido o scaduto." };
+      await db.update(users).set({ emailVerified: true, updatedAt: now }).where(eq(users.id, match.userId));
+      ctx.invalidateQueries();
+      return { ok: true, error: null };
+    }
+  }),
+  requestPasswordReset: defineAction({
+    request: object({ email: string2().trim().email().max(160) }),
+    response: object({ ok: literal(true), emailSent: boolean2() }),
+    privileged: [privileged.sendTavoleeroEmail],
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const email = cleanEmail(args.email);
+      const rows = await db.select({ id: users.id, displayName: users.displayName, email: users.email }).from(users).where(eq(users.email, email)).limit(1);
+      const user = rows[0];
+      if (!user)
+        return { ok: true, emailSent: true };
+      const resetToken = await createEmailToken(ctx, user.id, "reset", 60 * 60 * 1000);
+      const emailSent = await sendTavoleeroEmail(ctx, { to: user.email, displayName: user.displayName, purpose: "reset", token: resetToken });
+      return { ok: true, emailSent };
+    }
+  }),
+  resetPassword: defineAction({
+    request: object({ token: string2().min(1), password: string2().min(8).max(100) }),
+    response: simpleResult,
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const now = new Date;
+      const rows = await db.select({ id: emailTokens.id, userId: emailTokens.userId }).from(emailTokens).where(and(eq(emailTokens.tokenHash, await sha256(args.token)), eq(emailTokens.purpose, "reset"), gt(emailTokens.expiresAt, now), isNull(emailTokens.usedAt))).limit(1);
+      const match = rows[0];
+      if (!match)
+        return { ok: false, error: "Link non valido o scaduto." };
+      const consumed = await db.update(emailTokens).set({ usedAt: now }).where(and(eq(emailTokens.id, match.id), isNull(emailTokens.usedAt))).returning({ id: emailTokens.id });
+      if (!consumed[0])
+        return { ok: false, error: "Link non valido o scaduto." };
+      const salt = randomHex(16);
+      await db.update(users).set({ passwordHash: await passwordHash(args.password, salt), passwordSalt: salt, updatedAt: now }).where(eq(users.id, match.userId));
+      await db.delete(sessions).where(eq(sessions.userId, match.userId));
+      ctx.invalidateQueries();
+      return { ok: true, error: null };
     }
   }),
   activatePremiumDemo: defineAction({
