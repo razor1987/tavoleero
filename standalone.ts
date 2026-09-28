@@ -6,12 +6,16 @@
 //
 // The action bundle (./vendor/actions.js) was built from server/src/actions.ts
 // and is fully self-contained; the only runtime it needs is a drizzle
-// database, provided here via bun:sqlite. Schema migrations in ./migrations
-// are applied once, in filename order, tracked in _migrations.
+// database, provided here via bun:sqlite. Privileged handlers (email via
+// Resend) come from ./vendor/privileged.js, built from
+// server/src/privileged.ts, and are reached through ctx.executePrivileged.
+// Schema migrations in ./migrations are applied once, in filename order,
+// tracked in _migrations.
 
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { Actions } from "./vendor/actions.js";
+import { privilegedHandlers } from "./vendor/privileged.js";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -33,8 +37,38 @@ for (const file of readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql"))
 }
 
 const db = drizzle(sqlite);
-// Minimal Ctx: the game actions only use ctx.db() and ctx.invalidateQueries().
-const ctx = { db: () => db, invalidateQueries: () => {} };
+// Minimal Ctx: the game actions use ctx.db() and ctx.invalidateQueries().
+// Email actions additionally call ctx.executePrivileged(contract, input):
+// it is routed here to the bundled privileged handlers (built from
+// server/src/privileged.ts), matched by contract name, with the contract's
+// own timeout applied.
+const privilegedByName = new Map<string, (input: unknown) => Promise<unknown>>(
+  (
+    privilegedHandlers as {
+      entries: Array<{ contract: { name: string }; handler: (input: unknown) => Promise<unknown> }>;
+    }
+  ).entries.map((entry) => [entry.contract.name, entry.handler]),
+);
+const ctx = {
+  db: () => db,
+  invalidateQueries: () => {},
+  executePrivileged: async (contract: { name?: string; timeoutMs?: number }, input: unknown) => {
+    const handler = contract?.name ? privilegedByName.get(contract.name) : undefined;
+    if (!handler) throw new Error(`Unknown privileged contract: ${contract?.name ?? "?"}`);
+    const timeoutMs = contract?.timeoutMs ?? 30000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        handler(input),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Privileged call timed out")), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  },
+};
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
