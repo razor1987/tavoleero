@@ -5781,7 +5781,9 @@ var Actions = {
       const email = cleanEmail(args.email);
       const rows = await db.select().from(users).where(eq(users.email, email)).limit(1);
       const user = rows[0];
-      if (!user || await passwordHash(args.password, user.passwordSalt) !== user.passwordHash)
+      if (!user)
+        return { ok: false, token: null, user: null, error: "Utente non registrato." };
+      if (await passwordHash(args.password, user.passwordSalt) !== user.passwordHash)
         return { ok: false, token: null, user: null, error: "Email o password non corretti." };
       const token = await createSession(ctx, user.id);
       return { ok: true, token, user: { id: user.id, displayName: user.displayName, email: user.email, premium: user.premium, emailVerified: user.emailVerified }, error: null };
@@ -5838,7 +5840,7 @@ var Actions = {
   }),
   requestPasswordReset: defineAction({
     request: object({ email: string2().trim().email().max(160) }),
-    response: object({ ok: literal(true), emailSent: boolean2() }),
+    response: object({ ok: literal(true), accountExists: boolean2(), emailSent: boolean2() }),
     privileged: [privileged.sendTavoleeroEmail],
     async handler(ctx, args) {
       const db = ctx.db();
@@ -5846,10 +5848,10 @@ var Actions = {
       const rows = await db.select({ id: users.id, displayName: users.displayName, email: users.email }).from(users).where(eq(users.email, email)).limit(1);
       const user = rows[0];
       if (!user)
-        return { ok: true, emailSent: true };
+        return { ok: true, accountExists: false, emailSent: false };
       const resetToken = await createEmailToken(ctx, user.id, "reset", 60 * 60 * 1000);
       const emailSent = await sendTavoleeroEmail(ctx, { to: user.email, displayName: user.displayName, purpose: "reset", token: resetToken });
-      return { ok: true, emailSent };
+      return { ok: true, accountExists: true, emailSent };
     }
   }),
   resetPassword: defineAction({
