@@ -5758,7 +5758,7 @@ var Actions = {
       const email = cleanEmail(args.email);
       const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
       if (existing[0])
-        return { ok: false, token: null, user: null, error: "Esiste gi\xE0 un account con questa email.", verificationSent: false };
+        return { ok: false, token: null, user: null, error: "Questa email \xE8 gi\xE0 registrata. Accedi oppure recupera la password.", verificationSent: false };
       const salt = randomHex(16);
       const now = new Date;
       const displayName = args.displayName.trim();
