@@ -5657,9 +5657,7 @@ var premiumActivations = sqliteTable("premium_activations", {
 
 // src/actions.ts
 var accessMode = _enum(["free", "premium"]);
-var themeMode = _enum(["classic", "neon", "fresh", "midnight"]);
 var accessResponse = object({ selected: boolean2(), mode: accessMode, updatedAt: string2().nullable() });
-var themeResponse = object({ theme: themeMode });
 var userShape = object({ id: number2(), displayName: string2(), email: string2(), premium: boolean2(), emailVerified: boolean2() });
 var authResponse = object({ ok: boolean2(), token: string2().nullable(), user: userShape.nullable(), error: string2().nullable() });
 var registerResponse = authResponse.extend({ verificationSent: boolean2() });
@@ -5729,24 +5727,6 @@ var Actions = {
     response: accessResponse,
     async handler() {
       return { selected: true, mode: "free", updatedAt: new Date().toISOString() };
-    }
-  }),
-  getTheme: defineAction({
-    request: object({}),
-    response: themeResponse,
-    async handler(ctx) {
-      const rows = await ctx.db().select({ theme: accessState.theme }).from(accessState).where(eq(accessState.id, 1)).limit(1);
-      return { theme: rows[0]?.theme ?? "neon" };
-    }
-  }),
-  setTheme: defineAction({
-    request: object({ theme: themeMode }),
-    response: themeResponse,
-    async handler(ctx, args) {
-      const now = new Date;
-      await ctx.db().insert(accessState).values({ id: 1, mode: "free", theme: args.theme, updatedAt: now }).onConflictDoUpdate({ target: accessState.id, set: { theme: args.theme, updatedAt: now } });
-      ctx.invalidateQueries();
-      return { theme: args.theme };
     }
   }),
   register: defineAction({
