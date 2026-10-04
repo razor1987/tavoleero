@@ -42,7 +42,7 @@ export const MAX_CHAINS = 8;
 export type MPPhase =
   | "lobby"
   | "author" | "pass" | "verdict" | "reveal" | "results"
-  | "mAuthor" | "mDraw" | "mInterpret" | "mRedraw" | "mReveal";
+  | "mAuthor" | "mDraw" | "mPlayerDraw" | "mReveal";
 export type ScribbleMode = "rounds" | "free" | "mute";
 
 export interface Seat {
@@ -79,13 +79,14 @@ export interface MPGame {
   rStep: number; // 0 = author; 1..P-1 = pass steps
   rSubmitted: boolean[]; // per seat, ha già inviato in questa fase
   rVerdicts: (boolean | null)[]; // per catena (fase verdict)
-  // mute (stella):
+  // mute (stella): describer sceglie frase + descrizione pubblica, disegna in
+  // segreto; i giocatori vedono SOLO la descrizione e disegnano in parallelo.
   mDescriber: number;
-  mSecret: string | null;
+  mSecret: string | null; // frase segreta (reveal)
+  mDescription: string | null; // descrizione pubblica del describer
   mAuthorDone: boolean;
-  mDrawing: string | null; // disegno del describer
-  mInterpret: Map<number, string>; // seat -> testo segreto
-  mDrawings: Map<number, string>; // seat -> disegno
+  mDrawing: string | null; // disegno del describer (segreto fino al reveal)
+  mDrawings: Map<number, string>; // seat -> disegno (giocatori)
   mAwarded: number | null;
 }
 
@@ -130,6 +131,7 @@ export interface View {
     prompt: { kind: "text" | "drawing"; value: string } | null;
     chainsView?: { starterName: string; entries: { playerName: string; kind: string; value: string }[] }[];
     secret?: string;
+    description?: string; // mute: descrizione pubblica del describer
     judgeName?: string | null;
     awardedName?: string | null;
     canAwardList?: string[];
@@ -324,9 +326,9 @@ function startAuthorPhase(game: MPGame, players: number, now: number): void {
 function startMuteRound(game: MPGame, players: number, now: number): void {
   game.mDescriber = describerForRound(game.roundIndex, players);
   game.mSecret = null;
+  game.mDescription = null;
   game.mAuthorDone = false;
   game.mDrawing = null;
-  game.mInterpret = new Map<number, string>();
   game.mDrawings = new Map<number, string>();
   game.mAwarded = null;
   game.phase = "mAuthor";
@@ -405,18 +407,6 @@ function closeVerdict(room: Room, now: number): void {
   }
 }
 
-function closeInterpret(room: Room, now: number): void {
-  const game = room.game!;
-  if (game.mInterpret.size === 0) {
-    // Nessun interprete: niente da ridisegnare, vai diretto al reveal.
-    game.phase = "mReveal";
-    game.phaseEndsAt = null;
-    return;
-  }
-  game.phase = "mRedraw";
-  game.phaseEndsAt = now + game.timer * 1000;
-}
-
 function currentJudge(room: Room): number {
   const game = room.game!;
   const d = room.seats[game.mDescriber];
@@ -425,7 +415,8 @@ function currentJudge(room: Room): number {
 }
 
 function contributors(game: MPGame): number[] {
-  return [...game.mInterpret.keys()].sort((a, b) => a - b);
+  // mute: i seat che hanno consegnato il disegno.
+  return [...game.mDrawings.keys()].sort((a, b) => a - b);
 }
 
 // ---------------------------------------------------------------------------
@@ -453,8 +444,7 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
     case "verdict":
     case "mAuthor":
     case "mDraw":
-    case "interpret":
-    case "redraw":
+    case "playerDraw":
     case "award":
     case "nextRound":
     case "toLobby":
@@ -509,8 +499,11 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
       if (seat !== game.mDescriber) return fail("NOT_YOUR_TURN", "Solo il describer sceglie la frase");
       if (game.mAuthorDone) return fail("ALREADY_SUBMITTED", "Frase già scelta");
       const text = cleanText(msg.text);
+      const description = cleanText(msg.description);
       if (!text) return fail("INVALID", "Testo vuoto");
+      if (!description) return fail("INVALID", "Descrizione vuota");
       game.mSecret = text;
+      game.mDescription = description;
       game.mAuthorDone = true;
       game.phase = "mDraw";
       game.phaseEndsAt = now + game.timer * 1000;
@@ -522,31 +515,20 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
       if (game.mDrawing !== null) return fail("ALREADY_SUBMITTED", "Disegno già inviato");
       if (!isImageValue(msg.image)) return fail("INVALID", "Disegno non valido");
       game.mDrawing = msg.image;
-      game.phase = "mInterpret";
-      game.phaseEndsAt = now + TEXT_PHASE_MS;
+      game.phase = "mPlayerDraw";
+      game.phaseEndsAt = now + game.timer * 1000;
       return { ok: true, changed: true };
     }
-    case "interpret": {
-      if (game.phase !== "mInterpret") return fail("BAD_PHASE", "Non è la fase delle interpretazioni");
-      if (seat === game.mDescriber) return fail("NOT_YOUR_TURN", "Il describer non interpreta");
-      if (game.mInterpret.has(seat)) return fail("ALREADY_SUBMITTED", "Hai già inviato l'interpretazione");
-      const text = cleanText(msg.text);
-      if (!text || text.startsWith("data:image/")) return fail("INVALID", "Testo non valido");
-      game.mInterpret.set(seat, text);
-      const allIn = room.seats.every(
-        (s, i) => !s.connected || i === game.mDescriber || game.mInterpret.has(i),
-      );
-      if (allIn) closeInterpret(room, now);
-      return { ok: true, changed: true };
-    }
-    case "redraw": {
-      if (game.phase !== "mRedraw") return fail("BAD_PHASE", "Non è la fase del ridisegno");
-      if (!game.mInterpret.has(seat)) return fail("NOT_YOUR_TURN", "Solo chi ha interpretato ridisegna");
+    case "playerDraw": {
+      // Catena muta multiplayer: i giocatori vedono SOLO la descrizione
+      // testuale del describer (mai il suo disegno) e disegnano in parallelo.
+      if (game.phase !== "mPlayerDraw") return fail("BAD_PHASE", "Non è la fase del disegno");
+      if (seat === game.mDescriber) return fail("NOT_YOUR_TURN", "Il describer non disegna qui");
       if (game.mDrawings.has(seat)) return fail("ALREADY_SUBMITTED", "Disegno già inviato");
       if (!isImageValue(msg.image)) return fail("INVALID", "Disegno non valido");
       game.mDrawings.set(seat, msg.image);
-      const done = contributors(game).every(
-        (c) => !room.seats[c].connected || game.mDrawings.has(c),
+      const done = room.seats.every(
+        (s, i) => !s.connected || i === game.mDescriber || game.mDrawings.has(i),
       );
       if (done) {
         game.phase = "mReveal";
@@ -563,8 +545,8 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
       if (!Number.isInteger(player) || player < 0 || player >= room.seats.length)
         return fail("INVALID", "Giocatore non valido");
       // awardSilentWinner (App.tsx): mai al describer/starter, una sola volta.
-      // Qui i candidabili sono i contributori (chi ha un'interpretazione).
-      if (player === game.mDescriber || !game.mInterpret.has(player))
+      // Qui i candidabili sono i giocatori che hanno consegnato il disegno.
+      if (player === game.mDescriber || !game.mDrawings.has(player))
         return fail("INVALID", "Giocatore non candidabile");
       game.scores[player] += 1;
       game.mAwarded = player;
@@ -635,9 +617,9 @@ function intentStartGame(room: Room, seat: number, msg: any, now: number): Inten
     rVerdicts: [],
     mDescriber: 0,
     mSecret: null,
+    mDescription: null,
     mAuthorDone: false,
     mDrawing: null,
-    mInterpret: new Map<number, string>(),
     mDrawings: new Map<number, string>(),
     mAwarded: null,
   };
@@ -665,24 +647,24 @@ export function tickRoom(room: Room, now: number): boolean {
       closeVerdict(room, now);
       return true;
     case "mAuthor":
-      // Describer assente: parola casuale dal pack (come "Pesca una frase").
+      // Describer assente: parola casuale dal pack (come "Pesca una frase") e
+      // descrizione generica (il disegno resta comunque segreto fino al reveal).
       game.mSecret = game.mSecret ?? randomWord(game.theme);
+      game.mDescription = game.mDescription ?? "Nessuna descrizione: disegna quello che vuoi!";
       game.mAuthorDone = true;
       game.phase = "mDraw";
       game.phaseEndsAt = now + game.timer * 1000;
       return true;
     case "mDraw":
       game.mDrawing = game.mDrawing ?? BLANK_PNG;
-      game.phase = "mInterpret";
-      game.phaseEndsAt = now + TEXT_PHASE_MS;
+      game.phase = "mPlayerDraw";
+      game.phaseEndsAt = now + game.timer * 1000;
       return true;
-    case "mInterpret":
-      // Chi non ha inviato salta il resto del round.
-      closeInterpret(room, now);
-      return true;
-    case "mRedraw":
-      for (const c of contributors(game)) {
-        if (!game.mDrawings.has(c)) game.mDrawings.set(c, BLANK_PNG);
+    case "mPlayerDraw":
+      // Chi non ha consegnato salta il resto del round.
+      for (let i = 0; i < room.seats.length; i++) {
+        if (i === game.mDescriber || game.mDrawings.has(i)) continue;
+        game.mDrawings.set(i, BLANK_PNG);
       }
       game.phase = "mReveal";
       game.phaseEndsAt = null;
@@ -809,20 +791,15 @@ export function getView(room: Room, seat: number, now: number): View {
       if (seat === game.mDescriber && game.mSecret) prompt = { kind: "text", value: game.mSecret };
       break;
     }
-    case "mInterpret": {
-      myTurn = connected && seat !== game.mDescriber && !game.mInterpret.has(seat);
+    case "mPlayerDraw": {
+      // I giocatori vedono SOLO la descrizione testuale del describer
+      // (mai il suo disegno) e disegnano in parallelo col timer sincronizzato.
+      const isPlayer = seat !== game.mDescriber;
+      myTurn = connected && isPlayer && !game.mDrawings.has(seat);
       pending = pendingNames(
-        room.seats.map((_, i) => i).filter((i) => i !== game.mDescriber && !game.mInterpret.has(i)),
+        room.seats.map((_, i) => i).filter((i) => i !== game.mDescriber && !game.mDrawings.has(i)),
       );
-      // Disegno del describer visibile solo ai non-describer.
-      if (myTurn && game.mDrawing) prompt = { kind: "drawing", value: game.mDrawing };
-      break;
-    }
-    case "mRedraw": {
-      const isContributor = game.mInterpret.has(seat);
-      myTurn = connected && isContributor && !game.mDrawings.has(seat);
-      pending = pendingNames(contributors(game).filter((c) => !game.mDrawings.has(c)));
-      if (myTurn && game.mDrawing) prompt = { kind: "drawing", value: game.mDrawing };
+      if (myTurn && game.mDescription) prompt = { kind: "text", value: game.mDescription };
       break;
     }
     case "mReveal": {
@@ -831,15 +808,16 @@ export function getView(room: Room, seat: number, now: number): View {
       myTurn = connected && seat === judge && game.mAwarded === null && contrib.length > 0;
       pending = game.mAwarded === null && contrib.length > 0 && judge >= 0 ? [seatName(room, judge)] : [];
       const descrName = seatName(room, game.mDescriber);
+      // Disegno segreto del describer + un disegno per giocatore.
       const entries: { playerName: string; kind: string; value: string }[] = [
         { playerName: descrName, kind: "drawing", value: game.mDrawing ?? BLANK_PNG },
       ];
       for (const c of contrib) {
-        entries.push({ playerName: seatName(room, c), kind: "text", value: game.mInterpret.get(c) ?? "" });
         entries.push({ playerName: seatName(room, c), kind: "drawing", value: game.mDrawings.get(c) ?? BLANK_PNG });
       }
       g.chainsView = [{ starterName: descrName, entries }];
       g.secret = game.mSecret ?? "";
+      g.description = game.mDescription ?? "";
       g.judgeName = judge >= 0 ? seatName(room, judge) : null;
       g.awardedName = game.mAwarded !== null ? seatName(room, game.mAwarded) : null;
       if (seat === judge && game.mAwarded === null) {
