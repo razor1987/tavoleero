@@ -18,6 +18,15 @@ import { Actions } from "./vendor/actions.js";
 import { privilegedHandlers } from "./vendor/privileged.js";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  RoomManager,
+  handleIntent,
+  tickRoom,
+  getView,
+  markDisconnected,
+  MAX_PAYLOAD_BYTES,
+} from "./mp.ts";
+import type { Room } from "./mp.ts";
 
 const PORT = Number(process.env.PORT || 3000);
 const DB_PATH = process.env.DB_PATH || "./tavoleero.db";
@@ -94,10 +103,60 @@ async function serveSeoFile(fileName: string, contentType: string): Promise<Resp
 
 const publicRoot = resolve(PUBLIC_DIR);
 
+// ---------------------------------------------------------------------------
+// Multiplayer Fase 1 — WebSocket su /ws (Scribble Scratch). Stato in mp.ts.
+// ---------------------------------------------------------------------------
+type WsData = { roomCode: string | null; seat: number };
+const mp = new RoomManager();
+const seatSockets = new Map<string, any>(); // `${code}:${seat}` -> ws
+
+function wsKey(code: string, seat: number): string {
+  return `${code}:${seat}`;
+}
+
+function sendError(ws: any, code: string, message: string): void {
+  try {
+    ws.send(JSON.stringify({ t: "error", code, message }));
+  } catch {
+    // socket già chiusa
+  }
+}
+
+function sendViewTo(room: Room, seat: number): void {
+  const ws = seatSockets.get(wsKey(room.code, seat));
+  if (!ws) return;
+  try {
+    ws.send(JSON.stringify({ t: "view", view: getView(room, seat, Date.now()) }));
+  } catch {
+    // socket già chiusa
+  }
+}
+
+function broadcastRoom(room: Room): void {
+  for (let i = 0; i < room.seats.length; i++) {
+    if (room.seats[i].connected) sendViewTo(room, i);
+  }
+}
+
+setInterval(() => {
+  const now = Date.now();
+  mp.cleanup(now);
+  for (const room of mp.rooms.values()) {
+    if (room.game && tickRoom(room, now)) broadcastRoom(room);
+  }
+}, 500);
+
 Bun.serve({
   port: PORT,
-  async fetch(req) {
+  async fetch(req, server) {
     const url = new URL(req.url);
+
+    // WebSocket multiplayer: upgrade oppure 400.
+    if (url.pathname === "/ws") {
+      const upgraded = server.upgrade(req, { data: { roomCode: null, seat: -1 } as WsData });
+      if (upgraded) return undefined as any;
+      return new Response("WebSocket upgrade failed", { status: 400 });
+    }
 
     if (url.pathname === "/actions" && req.method === "POST") {
       let body: any;
@@ -153,6 +212,83 @@ Bun.serve({
     const index = Bun.file(join(PUBLIC_DIR, "index.html"));
     if (await index.exists()) return new Response(index);
     return new Response("Not found", { status: 404 });
+  },
+
+  websocket: {
+    open(_ws) {
+      // L'associazione stanza/seat avviene al primo createRoom/joinRoom.
+    },
+    message(ws: any, message: any) {
+      const data = ws.data as WsData;
+      const text =
+        typeof message === "string" ? message : Buffer.from(message as ArrayBuffer).toString("utf8");
+      if (text.length > MAX_PAYLOAD_BYTES) {
+        sendError(ws, "INVALID", "Messaggio troppo grande");
+        return;
+      }
+      let msg: any;
+      try {
+        msg = JSON.parse(text);
+      } catch {
+        sendError(ws, "INVALID", "JSON non valido");
+        return;
+      }
+      const now = Date.now();
+
+      if (msg?.t === "createRoom") {
+        const res = mp.createRoom(msg.name, msg.premium === true);
+        if (!res.ok) {
+          sendError(ws, res.error.code, res.error.message);
+          return;
+        }
+        data.roomCode = res.room.code;
+        data.seat = res.seat;
+        seatSockets.set(wsKey(res.room.code, res.seat), ws);
+        ws.send(JSON.stringify({ t: "view", view: res.view }));
+        return;
+      }
+      if (msg?.t === "joinRoom") {
+        const res = mp.joinRoom(String(msg.code ?? ""), msg.name);
+        if (!res.ok) {
+          sendError(ws, res.error.code, res.error.message);
+          return;
+        }
+        data.roomCode = res.room.code;
+        data.seat = res.seat;
+        seatSockets.set(wsKey(res.room.code, res.seat), ws);
+        ws.send(JSON.stringify({ t: "view", view: res.view }));
+        broadcastRoom(res.room);
+        return;
+      }
+
+      if (!data.roomCode || data.seat < 0) {
+        sendError(ws, "INVALID", "Entra prima in una stanza");
+        return;
+      }
+      const room = mp.get(data.roomCode);
+      if (!room) {
+        sendError(ws, "ROOM_NOT_FOUND", "Stanza non trovata");
+        return;
+      }
+      const res = handleIntent(room, data.seat, msg, now);
+      if (!res.ok) {
+        sendError(ws, res.error.code, res.error.message);
+        return;
+      }
+      if (res.changed) broadcastRoom(room);
+    },
+    close(ws: any, _code: number, _reason: string) {
+      // Chiude il WS: marca il seat disconnesso (NON rimosso: serve per il rejoin).
+      const data = ws.data as WsData;
+      if (data.roomCode && data.seat >= 0) {
+        seatSockets.delete(wsKey(data.roomCode, data.seat));
+        const room = mp.get(data.roomCode);
+        if (room) {
+          markDisconnected(room, data.seat, Date.now());
+          broadcastRoom(room);
+        }
+      }
+    },
   },
 });
 

@@ -7,6 +7,7 @@ WORKDIR /app
 COPY package.json ./
 RUN bun install
 COPY standalone.ts ./
+COPY mp.ts ./
 COPY seo/ ./seo/
 COPY vendor/ ./vendor/
 COPY migrations/ ./migrations/
