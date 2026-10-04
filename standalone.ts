@@ -77,6 +77,21 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+// SEO / public files: served with real content types, never the SPA fallback.
+// Files live in ./seo (copied by the Dockerfile); the route table below is
+// the only way to reach them, so there is no path-traversal risk.
+const SEO_DIR = "./seo";
+const GAME_PAGES: Record<string, string> = {
+  "scribble-scratch": "giochi/scribble-scratch.html",
+  "parole-in-fuga": "giochi/parole-in-fuga.html",
+  "sintonia": "giochi/sintonia.html",
+};
+async function serveSeoFile(fileName: string, contentType: string): Promise<Response> {
+  const file = Bun.file(join(resolve(SEO_DIR), fileName));
+  if (!(await file.exists())) return new Response("Not found", { status: 404 });
+  return new Response(file, { headers: { "content-type": contentType } });
+}
+
 const publicRoot = resolve(PUBLIC_DIR);
 
 Bun.serve({
@@ -108,6 +123,23 @@ Bun.serve({
       } catch (e: any) {
         console.error(`action ${body.action} failed`, e);
         return json({ error: e?.message || "Action failed" }, 500);
+      }
+    }
+
+    // SEO / public files with real content types (never the SPA fallback).
+    if (req.method === "GET") {
+      if (url.pathname === "/robots.txt")
+        return serveSeoFile("robots.txt", "text/plain; charset=utf-8");
+      if (url.pathname === "/sitemap.xml")
+        return serveSeoFile("sitemap.xml", "application/xml; charset=utf-8");
+      if (url.pathname === "/ads.txt")
+        return serveSeoFile("ads.txt", "text/plain; charset=utf-8");
+      if (url.pathname === "/privacy")
+        return serveSeoFile("privacy.html", "text/html; charset=utf-8");
+      const gameMatch = /^\/giochi\/([a-z-]+)\/?$/.exec(url.pathname);
+      if (gameMatch) {
+        const page = GAME_PAGES[gameMatch[1]];
+        if (page) return serveSeoFile(page, "text/html; charset=utf-8");
       }
     }
 
