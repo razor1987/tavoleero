@@ -17,7 +17,7 @@
     <meta name="twitter:description" content="Tavoleero: giochi di società per feste con un solo telefono. Scribble Scratch, Parole in fuga e Sintonia: disegna, descrivi, mima e indovina con gli amici. Gratis nel browser." />
     <link rel="canonical" href="https://tavoleero.onrender.com/" />
     
-  <link rel="stylesheet" crossorigin href="./assets/index-az6ghyxp.css"><script type="module" crossorigin src="./assets/index-c435hdcn.js"></script></head>
+  <link rel="stylesheet" crossorigin href="./assets/index-az6ghyxp.css"><script type="module" crossorigin src="./assets/index-a62z6jrq.js"></script></head>
   <body>
     <div
       data-generated-space-root=""
@@ -141,6 +141,8 @@
             try {
               const banner = document.getElementById(BANNER_ID);
               if (banner) banner.remove();
+              const appRoot = document.getElementById("root");
+              if (appRoot) appRoot.removeAttribute("inert");
             } catch (_) {}
           }
 
@@ -153,8 +155,11 @@
 
               const banner = document.createElement("aside");
               banner.id = BANNER_ID;
-              banner.setAttribute("role", "region");
+              banner.setAttribute("role", "dialog");
+              banner.setAttribute("aria-modal", "true");
               banner.setAttribute("aria-label", "Preferenze cookie");
+              const appRoot = document.getElementById("root");
+              if (appRoot) appRoot.setAttribute("inert", "");
               banner.innerHTML = '<p>Usiamo solo cookie tecnici e il salvataggio locale sul tuo dispositivo per far funzionare l\'app. Niente cookie di tracciamento o pubblicità per ora.</p><div class="cookie-actions"><a href="/privacy">Leggi l\'informativa privacy</a><button type="button" data-cookie-choice="rejected">Rifiuta</button><button type="button" data-cookie-choice="accepted">Accetta</button></div>';
               banner.addEventListener("click", (event) => {
                 try {
@@ -166,6 +171,8 @@
                 } catch (_) {}
               });
               document.body.appendChild(banner);
+              const firstChoice = banner.querySelector('button[data-cookie-choice="rejected"]');
+              if (firstChoice instanceof HTMLElement) firstChoice.focus();
             } catch (_) {}
           }
 
