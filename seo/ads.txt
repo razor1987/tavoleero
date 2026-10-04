@@ -1,7 +1,6 @@
 # Tavoleero — ads.txt
 # ---------------------------------------------------------------------------
-# ISTRUZIONI: sostituire "pub-XXXXXXXXXXXXXXXX" con il proprio ID editore
-# Google AdSense dopo aver creato l'account su https://www.google.com/adsense/
-# Trovi l'ID nella dashboard AdSense alla voce "Informazioni account".
+# ID editore Google AdSense verificato. Per modificare l'account, sostituire
+# l'ID qui sotto con quello nuovo (dashboard AdSense > "Informazioni account").
 # ---------------------------------------------------------------------------
-google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
+google.com, pub-5370479957275000, DIRECT, f08c47fec0942fa0
