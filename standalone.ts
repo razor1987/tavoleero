@@ -193,6 +193,8 @@ Bun.serve({
         return serveSeoFile("sitemap.xml", "application/xml; charset=utf-8");
       if (url.pathname === "/ads.txt")
         return serveSeoFile("ads.txt", "text/plain; charset=utf-8");
+      if (url.pathname === "/google0d537adf2bb076bc.html")
+        return serveSeoFile("google0d537adf2bb076bc.html", "text/html; charset=utf-8");
       if (url.pathname === "/privacy")
         return serveSeoFile("privacy.html", "text/html; charset=utf-8");
       const gameMatch = /^\/giochi\/([a-z-]+)\/?$/.exec(url.pathname);

@@ -20,6 +20,80 @@ export const SCRIBBLE_WORDS: Record<string, string[]> = {
 };
 
 // ---------------------------------------------------------------------------
+// Sintonia — copia esatta da party-hub/client/src/App.tsx (SyncGame).
+// ---------------------------------------------------------------------------
+export const SYNC_PACKS: Record<string, string[]> = {
+  base: ["caffè ___", "___ di casa", "pausa ___", "giornata ___", "scarpe da ___", "serata ___", "pizza ___", "pasta alla ___", "___ fritto", "torta di ___", "gelato al ___", "film ___", "serie ___", "scena ___", "finale ___", "canzone ___", "musica ___", "viaggio ___", "valigia ___", "mare ___", "partita ___", "squadra ___", "campione ___", "pioggia ___"],
+  premium: ["___ galattico", "super ___", "___ misterioso", "mega ___", "___ invisibile", "missione ___", "aperitivo ___", "nonna ___", "festa di ___", "___ del cuore", "primo ___", "appuntamento ___", "password ___", "chat ___", "modalità ___", "robot ___"],
+};
+
+// Parole iniziali "riempitive" ignorate nella normalizzazione (copia esatta).
+const FILLERS = new Set(["il","lo","la","i","gli","le","un","uno","una","l","di","del","dello","della","dei","degli","delle","a","al","allo","alla","ai","agli","alle","da","dal","dallo","dalla","in","nel","nello","nella","su","sul","sulla","con","per","tra","fra"]);
+
+// COPIA ESATTA da App.tsx (SyncGame)
+export function normalized(value: string): string {
+  const words = value.trim().toLocaleLowerCase("it-IT").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[’']/g, " ").replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+  while (words.length > 1 && FILLERS.has(words[0] ?? "")) words.shift();
+  return words.join(" ");
+}
+
+// COPIA ESATTA da App.tsx (SyncGame): tolleranza a un piccolo refuso.
+export function tinyTypo(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.min(a.length, b.length) < 5 || Math.abs(a.length - b.length) > 1) return false;
+  if (a.length === b.length) {
+    const diff: number[] = [];
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) diff.push(i);
+    if (diff.length === 1) return true;
+    const first = diff[0];
+    const second = diff[1];
+    return diff.length === 2 && first !== undefined && second === first + 1 && a[first] === b[second] && a[second] === b[first];
+  }
+  const shorter = a.length < b.length ? a : b;
+  const longer = a.length < b.length ? b : a;
+  let left = 0, right = 0, skipped = false;
+  while (left < shorter.length && right < longer.length) {
+    if (shorter[left] === longer[right]) { left += 1; right += 1; }
+    else if (skipped) return false;
+    else { skipped = true; right += 1; }
+  }
+  return true;
+}
+
+export interface SyncAnswerGroup {
+  label: string;
+  members: number[];
+  points: number;
+}
+
+// COPIA ESATTA da App.tsx (SyncGame): gruppi con punteggio 3/1/0.
+export function groupSyncAnswers(values: string[]): SyncAnswerGroup[] {
+  const groups: SyncAnswerGroup[] = [];
+  values.forEach((answer, index) => {
+    const key = normalized(answer);
+    if (!key) {
+      groups.push({ label: answer, members: [index], points: 0 });
+      return;
+    }
+    const found = groups.find((group) => {
+      const groupKey = normalized(group.label);
+      return Boolean(groupKey) && tinyTypo(groupKey, key);
+    });
+    if (found) found.members.push(index);
+    else groups.push({ label: answer, members: [index], points: 0 });
+  });
+  return groups.map((group) => ({
+    ...group,
+    points: group.members.length === 2 ? 3 : group.members.length >= 3 ? 1 : 0,
+  }));
+}
+
+// Punteggio automatico del confirm (copia esatta da App.tsx SyncGame).
+export function syncGroupPoints(memberCount: number): number {
+  return memberCount === 2 ? 3 : memberCount >= 3 ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Costanti
 // ---------------------------------------------------------------------------
 export const BLANK_PNG =
@@ -42,7 +116,11 @@ export const MAX_CHAINS = 8;
 export type MPPhase =
   | "lobby"
   | "author" | "pass" | "verdict" | "reveal" | "results"
-  | "mAuthor" | "mDraw" | "mPlayerDraw" | "mReveal";
+  | "mAuthor" | "mDraw" | "mPlayerDraw" | "mReveal"
+  | "sAnswer" | "sReview" | "sReveal" | "sWinner";
+export type GameKind = "scribble" | "sintonia";
+export type SintoniaResponseMode = "pass" | "paper";
+export type SintoniaPack = "base" | "premium";
 export type ScribbleMode = "rounds" | "free" | "mute";
 
 export interface Seat {
@@ -64,6 +142,7 @@ export interface MPChain {
 }
 
 export interface MPGame {
+  kind: GameKind; // "scribble" | "sintonia"
   mode: ScribbleMode;
   chains: number; // solo rounds: catene a testa (giri paralleli)
   timer: number; // secondi per disegno
@@ -88,6 +167,15 @@ export interface MPGame {
   mDrawing: string | null; // disegno del describer (segreto fino al reveal)
   mDrawings: Map<number, string>; // seat -> disegno (giocatori)
   mAwarded: number | null;
+  // sintonia (kind === "sintonia"): le risposte sono scritte in segreto su ogni
+  // device e raccolte in simultanea; punteggio e gruppi identici al
+  // single-device (SyncGame: normalized/tinyTypo/groupAnswers).
+  sMode: SintoniaResponseMode; // "pass" | "paper" (raccolta simultanea per entrambi)
+  sTarget: number; // traguardo punti
+  sPack: SintoniaPack;
+  sPrompt: string; // frase del round (pubblica)
+  sAnswers: (string | null)[]; // per seat, null = non inviata (SEGRETTE fino a sReview)
+  sGroups: SyncAnswerGroup[]; // gruppi proposti / finali
 }
 
 export interface Room {
@@ -118,6 +206,7 @@ export interface View {
     seats: { name: string; connected: boolean; isHost: boolean }[];
   };
   game: null | {
+    kind: GameKind;
     mode: ScribbleMode;
     roundIndex: number;
     totalRounds: number | null;
@@ -138,6 +227,13 @@ export interface View {
     standings?: { name: string; score: number }[];
     canAdvance?: boolean;
     progressLabel?: string;
+    // sintonia (kind === "sintonia")
+    sPrompt?: string;
+    sTarget?: number;
+    sMode?: SintoniaResponseMode;
+    sSubmitted?: boolean; // io ho già inviato la risposta in sAnswer
+    sCanReview?: boolean; // host in sReview: può dividere/unire/confermare
+    sGroups?: { label: string; members: string[]; points: number }[];
   };
 }
 
@@ -187,6 +283,42 @@ export function cleanName(raw: unknown): string {
 function cleanText(raw: unknown): string {
   if (typeof raw !== "string") return "";
   return raw.trim().slice(0, MAX_TEXT_LEN);
+}
+
+// Sintonia: maxLength 40 come l'input del single-device (App.tsx SyncGame).
+const MAX_SYNC_ANSWER_LEN = 40;
+function cleanSyncAnswer(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw.trim().slice(0, MAX_SYNC_ANSWER_LEN);
+}
+
+// true se tutti i seat CONNESSI hanno inviato la risposta.
+function allConnectedAnswered(room: Room): boolean {
+  const game = room.game;
+  if (!game) return false;
+  return room.seats.every((s, i) => !s.connected || game.sAnswers[i] !== null);
+}
+
+// Avvia il round Sintonia: nuova frase dal mazzo, risposte azzerate.
+function startSintoniaRound(game: MPGame, players: number): void {
+  const pool =
+    game.sPack === "premium"
+      ? [...SYNC_PACKS.base, ...SYNC_PACKS.premium]
+      : SYNC_PACKS.base;
+  game.sPrompt = pool[Math.floor(Math.random() * pool.length)] ?? "serata ___";
+  game.sAnswers = Array.from({ length: players }, () => null);
+  game.sGroups = [];
+  game.phase = "sAnswer";
+  game.phaseEndsAt = null;
+}
+
+// Chiude la raccolta: chi manca resta senza risposta ("" -> gruppo da 0
+// punti, come il single-device) e si passa al controllo dei gruppi.
+function sintoniaToReview(game: MPGame): void {
+  const answers = game.sAnswers.map((a) => a ?? "");
+  game.sGroups = groupSyncAnswers(answers);
+  game.phase = "sReview";
+  game.phaseEndsAt = null;
 }
 
 function isImageValue(raw: unknown): boolean {
@@ -448,6 +580,11 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
     case "award":
     case "nextRound":
     case "toLobby":
+    case "sAnswer":
+    case "sSplit":
+    case "sMerge":
+    case "sConfirm":
+    case "sForce":
       break;
     default:
       return fail("INVALID", `Intent sconosciuto: ${t}`);
@@ -566,12 +703,115 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
         startMuteRound(game, room.seats.length, now);
         return { ok: true, changed: true };
       }
+      // Sintonia: reveal -> nuovo round; winner -> nuova partita (score azzerati).
+      if (game.phase === "sReveal" && game.kind === "sintonia") {
+        game.roundIndex += 1;
+        startSintoniaRound(game, room.seats.length);
+        return { ok: true, changed: true };
+      }
+      if (game.phase === "sWinner" && game.kind === "sintonia") {
+        game.scores = Array.from({ length: room.seats.length }, () => 0);
+        game.roundIndex = 1;
+        startSintoniaRound(game, room.seats.length);
+        return { ok: true, changed: true };
+      }
       return fail("BAD_PHASE", "Non si può avanzare da questa fase");
     }
     case "toLobby": {
       if (!me.isHost) return fail("NOT_HOST", "Solo l'host può chiudere la partita");
-      if (game.phase !== "results") return fail("BAD_PHASE", "Non si può tornare alla lobby da qui");
+      const sintoniaExit = game.kind === "sintonia" && (game.phase === "sReveal" || game.phase === "sWinner");
+      if (game.phase !== "results" && !sintoniaExit)
+        return fail("BAD_PHASE", "Non si può tornare alla lobby da qui");
       room.game = null;
+      return { ok: true, changed: true };
+    }
+    case "sAnswer": {
+      if (game.kind !== "sintonia" || game.phase !== "sAnswer")
+        return fail("BAD_PHASE", "Non è la fase di scrittura");
+      if (game.sAnswers[seat] !== null)
+        return fail("ALREADY_SUBMITTED", "Hai già inviato la tua parola");
+      const text = cleanSyncAnswer(msg.text);
+      if (!text) return fail("INVALID", "Scrivi una parola prima di inviare");
+      game.sAnswers[seat] = text;
+      if (allConnectedAnswered(room)) {
+        sintoniaToReview(game);
+      }
+      return { ok: true, changed: true };
+    }
+    case "sForce": {
+      if (!me.isHost) return fail("NOT_HOST", "Solo l'host può forzare l'avanzamento");
+      if (game.kind !== "sintonia" || game.phase !== "sAnswer")
+        return fail("BAD_PHASE", "Non è la fase di scrittura");
+      // Chi non ha inviato resta senza risposta (gruppo da 0 punti come il single-device).
+      sintoniaToReview(game);
+      return { ok: true, changed: true };
+    }
+    case "sSplit": {
+      if (!me.isHost) return fail("NOT_HOST", "Solo l'host può modificare i gruppi");
+      if (game.kind !== "sintonia" || game.phase !== "sReview")
+        return fail("BAD_PHASE", "Non è la fase di controllo");
+      const index = msg.index;
+      if (!Number.isInteger(index) || index < 0 || index >= game.sGroups.length)
+        return fail("INVALID", "Gruppo non valido");
+      const group = game.sGroups[index]!;
+      if (group.members.length < 2)
+        return fail("INVALID", "Si può dividere solo un gruppo con più risposte");
+      // COPIA ESATTA della logica split di App.tsx SyncGame: il gruppo viene
+      // rimosso e le risposte singole sono accodate in fondo.
+      const singles = group.members.map((member) => ({
+        label: game.sAnswers[member] ?? "",
+        members: [member],
+        points: 0,
+      }));
+      game.sGroups = game.sGroups.filter((_, i) => i !== index).concat(singles);
+      return { ok: true, changed: true };
+    }
+    case "sMerge": {
+      if (!me.isHost) return fail("NOT_HOST", "Solo l'host può modificare i gruppi");
+      if (game.kind !== "sintonia" || game.phase !== "sReview")
+        return fail("BAD_PHASE", "Non è la fase di controllo");
+      // COPIA ESATTA della logica mergeSelected di App.tsx SyncGame.
+      const indices: number[] = Array.isArray(msg.indices) ? msg.indices : [];
+      const valid = [...new Set(indices)]
+        .filter((i) => Number.isInteger(i) && i >= 0 && i < game.sGroups.length)
+        .sort((a, b) => a - b);
+      if (valid.length < 2) return fail("INVALID", "Seleziona almeno 2 gruppi da unire");
+      const selected = valid.map((i) => game.sGroups[i]!);
+      // Solo gruppi con label non vuota (dopo normalizzazione) possono essere uniti.
+      if (selected.some((g) => !normalized(g.label)))
+        return fail("INVALID", "Non si possono unire gruppi con risposte vuote");
+      const firstIndex = valid[0] ?? 0;
+      const first = selected[0];
+      if (!first) return fail("INVALID", "Gruppi non validi");
+      const merged = { label: first.label, members: selected.flatMap((g) => g.members), points: 0 };
+      const next: typeof game.sGroups = [];
+      game.sGroups.forEach((g, i) => {
+        if (i === firstIndex) next.push(merged);
+        else if (!valid.includes(i)) next.push(g);
+      });
+      game.sGroups = next;
+      return { ok: true, changed: true };
+    }
+    case "sConfirm": {
+      if (!me.isHost) return fail("NOT_HOST", "Solo l'host può confermare i punteggi");
+      if (game.kind !== "sintonia" || game.phase !== "sReview")
+        return fail("BAD_PHASE", "Non è la fase di controllo");
+      // COPIA ESATTA del confirm di App.tsx SyncGame: ricalcola i punti
+      // (2 membri -> 3, 3+ -> 1, altrimenti 0), li somma, vince chi raggiunge
+      // il traguardo.
+      const awarded = game.sGroups.map((group) => ({
+        ...group,
+        points: syncGroupPoints(group.members.length),
+      }));
+      game.sGroups = awarded;
+      for (const group of awarded) {
+        for (const member of group.members) {
+          game.scores[member] = (game.scores[member] ?? 0) + group.points;
+        }
+      }
+      const finished = game.scores.some((score) => score >= game.sTarget);
+      game.phase = finished ? "sWinner" : "sReveal";
+      game.phaseEndsAt = null;
       return { ok: true, changed: true };
     }
     default:
@@ -584,6 +824,8 @@ function intentStartGame(room: Room, seat: number, msg: any, now: number): Inten
   if (!me.isHost) return fail("NOT_HOST", "Solo l'host può avviare la partita");
   if (room.game !== null) return fail("BAD_PHASE", "Partita già in corso");
   if (connectedCount(room) < 2) return fail("INVALID", "Servono almeno 2 giocatori connessi");
+
+  if (msg.kind === "sintonia") return intentStartSintonia(room, seat, msg, now);
 
   const mode = msg.mode;
   if (mode !== "rounds" && mode !== "free" && mode !== "mute")
@@ -601,6 +843,7 @@ function intentStartGame(room: Room, seat: number, msg: any, now: number): Inten
 
   const players = room.seats.length;
   const game: MPGame = {
+    kind: "scribble",
     mode,
     chains,
     timer,
@@ -622,10 +865,63 @@ function intentStartGame(room: Room, seat: number, msg: any, now: number): Inten
     mDrawing: null,
     mDrawings: new Map<number, string>(),
     mAwarded: null,
+    sMode: "pass",
+    sTarget: 25,
+    sPack: "base",
+    sPrompt: "",
+    sAnswers: [],
+    sGroups: [],
   };
   room.game = game;
   if (mode === "mute") startMuteRound(game, players, now);
   else startAuthorPhase(game, players, now);
+  return { ok: true, changed: true };
+}
+
+// ---------------------------------------------------------------------------
+// Sintonia: avvio partita (kind === "sintonia").
+// ---------------------------------------------------------------------------
+function intentStartSintonia(room: Room, seat: number, msg: any, now: number): IntentResult {
+  const sMode: SintoniaResponseMode = msg.sMode === "paper" ? "paper" : "pass";
+  const target = Number.isInteger(msg.target) ? msg.target : 25;
+  if (target < 10 || target > 50) return fail("INVALID", "Traguardo non valido (10-50)");
+  const sPack: SintoniaPack = msg.pack === "premium" ? "premium" : "base";
+  if (sPack === "premium" && !room.hostPremium)
+    return fail("INVALID", "Mazzo Premium: solo l'host premium può sceglierlo");
+
+  const players = room.seats.length;
+  const game: MPGame = {
+    kind: "sintonia",
+    mode: "rounds", // placeholder, non usato (il client usa `kind`)
+    chains: 1,
+    timer: 0,
+    theme: "",
+    hostPremium: room.hostPremium,
+    roundIndex: 1,
+    scores: Array.from({ length: players }, () => 0),
+    phase: "sAnswer",
+    phaseEndsAt: null,
+    rChains: [],
+    rWords: [],
+    rStep: 0,
+    rSubmitted: [],
+    rVerdicts: [],
+    mDescriber: 0,
+    mSecret: null,
+    mDescription: null,
+    mAuthorDone: false,
+    mDrawing: null,
+    mDrawings: new Map<number, string>(),
+    mAwarded: null,
+    sMode,
+    sTarget: target,
+    sPack,
+    sPrompt: "",
+    sAnswers: [],
+    sGroups: [],
+  };
+  room.game = game;
+  startSintoniaRound(game, players);
   return { ok: true, changed: true };
 }
 
@@ -721,9 +1017,10 @@ export function getView(room: Room, seat: number, now: number): View {
   let pending: string[] = [];
   let prompt: { kind: "text" | "drawing"; value: string } | null = null;
   const g: NonNullable<View["game"]> = {
+    kind: game.kind,
     mode: game.mode,
     roundIndex: game.roundIndex,
-    totalRounds: game.mode === "rounds" ? game.chains : null,
+    totalRounds: game.kind === "sintonia" ? null : game.mode === "rounds" ? game.chains : null,
     timer: game.timer,
     theme: game.theme,
     scores: [...game.scores],
@@ -735,15 +1032,25 @@ export function getView(room: Room, seat: number, now: number): View {
     standings: standingsOf(room),
     canAdvance: false,
     progressLabel:
-      game.mode === "rounds"
-        ? `Catena ${game.roundIndex} di ${game.chains}`
-        : game.mode === "mute"
-          ? `Catena muta ${game.roundIndex}`
-          : `Catena ${game.roundIndex}`,
+      game.kind === "sintonia"
+        ? `Round ${game.roundIndex}`
+        : game.mode === "rounds"
+          ? `Catena ${game.roundIndex} di ${game.chains}`
+          : game.mode === "mute"
+            ? `Catena muta ${game.roundIndex}`
+            : `Catena ${game.roundIndex}`,
   };
 
   const pendingNames = (indices: number[]): string[] =>
     indices.filter((i) => room.seats[i]?.connected).map((i) => seatName(room, i));
+
+  // View dei gruppi Sintonia con nomi dei membri (niente risposte nascoste qui).
+  const sintoniaGroupsView = () =>
+    game.sGroups.map((gr) => ({
+      label: gr.label,
+      members: gr.members.map((m) => seatName(room, m)),
+      points: gr.points,
+    }));
 
   switch (game.phase) {
     case "author": {
@@ -776,6 +1083,49 @@ export function getView(room: Room, seat: number, now: number): View {
       break;
     }
     case "results": {
+      g.canAdvance = !!me?.isHost;
+      break;
+    }
+    case "sAnswer": {
+      // DISCIPLINA DEI SEGRETI: ognuno vede solo se HA inviato la risposta,
+      // mai le parole altrui (rivelate solo da sReview in poi).
+      const submitted = game.sAnswers[seat] !== null;
+      myTurn = connected && !submitted;
+      pending = pendingNames(room.seats.map((_, i) => i).filter((i) => game.sAnswers[i] === null));
+      prompt = { kind: "text", value: game.sPrompt };
+      g.sPrompt = game.sPrompt;
+      g.sTarget = game.sTarget;
+      g.sMode = game.sMode;
+      g.sSubmitted = submitted;
+      break;
+    }
+    case "sReview": {
+      myTurn = false;
+      pending = [];
+      g.sPrompt = game.sPrompt;
+      g.sTarget = game.sTarget;
+      g.sMode = game.sMode;
+      g.sGroups = sintoniaGroupsView();
+      g.sCanReview = !!me?.isHost;
+      break;
+    }
+    case "sReveal": {
+      myTurn = false;
+      pending = [];
+      g.sPrompt = game.sPrompt;
+      g.sTarget = game.sTarget;
+      g.sMode = game.sMode;
+      g.sGroups = sintoniaGroupsView();
+      g.canAdvance = !!me?.isHost;
+      break;
+    }
+    case "sWinner": {
+      myTurn = false;
+      pending = [];
+      g.sPrompt = game.sPrompt;
+      g.sTarget = game.sTarget;
+      g.sMode = game.sMode;
+      g.sGroups = sintoniaGroupsView();
       g.canAdvance = !!me?.isHost;
       break;
     }
