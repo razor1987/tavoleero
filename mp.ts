@@ -97,7 +97,7 @@ export function syncGroupPoints(memberCount: number): number {
 // Costanti
 // ---------------------------------------------------------------------------
 export const BLANK_PNG =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4//f7fwAJ5QPz/Cx/UQAAAABJRU5ErkJggg==";
 export const MAX_SEATS = 8;
 export const MAX_ROOMS = 200;
 export const ROOM_TTL_MS = 30 * 60 * 1000; // cleanup stanze vuote dopo 30 min
