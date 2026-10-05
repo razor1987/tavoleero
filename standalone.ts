@@ -6,17 +6,17 @@
 //
 // The action bundle (./vendor/actions.js) was built from server/src/actions.ts
 // and is fully self-contained; the only runtime it needs is a drizzle
-// database, provided here via bun:sqlite. Privileged handlers (email via
+// database, provided here by ./db.ts (Postgres when DATABASE_URL is set,
+// otherwise the local SQLite fallback). Privileged handlers (email via
 // Resend) come from ./vendor/privileged.js, built from
 // server/src/privileged.ts, and are reached through ctx.executePrivileged.
-// Schema migrations in ./migrations are applied once, in filename order,
-// tracked in _migrations.
+// SQLite schema migrations in ./migrations are applied once, in filename
+// order, tracked in _migrations; the Postgres schema in ./migrations-pg is
+// idempotent and applied at every boot.
 
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
+import { initDb } from "./db.ts";
 import { Actions } from "./vendor/actions.js";
 import { privilegedHandlers } from "./vendor/privileged.js";
-import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   RoomManager,
@@ -29,23 +29,9 @@ import {
 import type { Room } from "./mp.ts";
 
 const PORT = Number(process.env.PORT || 3000);
-const DB_PATH = process.env.DB_PATH || "./tavoleero.db";
 const PUBLIC_DIR = "./public";
-const MIGRATIONS_DIR = "./migrations";
 
-const sqlite = new Database(DB_PATH);
-sqlite.exec("CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY)");
-const applied = new Set(
-  (sqlite.query("SELECT name FROM _migrations").all() as { name: string }[]).map((r) => r.name),
-);
-for (const file of readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort()) {
-  if (applied.has(file)) continue;
-  sqlite.exec(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
-  sqlite.query("INSERT INTO _migrations (name) VALUES (?)").run(file);
-  console.log(`applied migration ${file}`);
-}
-
-const db = drizzle(sqlite);
+const { db, backend } = await initDb();
 // Minimal Ctx: the game actions use ctx.db() and ctx.invalidateQueries().
 // Email actions additionally call ctx.executePrivileged(contract, input):
 // it is routed here to the bundled privileged handlers (built from
@@ -294,4 +280,4 @@ Bun.serve({
   },
 });
 
-console.log(`Tavoleero standalone listening on :${PORT} (db=${DB_PATH})`);
+console.log(`Tavoleero standalone listening on :${PORT} (backend=${backend})`);
