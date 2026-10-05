@@ -17,7 +17,7 @@
     <meta name="twitter:description" content="Tavoleero: giochi di società per feste con un solo telefono. Scribble Scratch, Parole in fuga e Sintonia: disegna, descrivi, mima e indovina con gli amici. Gratis nel browser." />
     <link rel="canonical" href="https://tavoleero.onrender.com/" />
     
-  <link rel="stylesheet" crossorigin href="./assets/index-n3psbew5.css"><script type="module" crossorigin src="./assets/index-a7m915dh.js"></script></head>
+  <link rel="stylesheet" crossorigin href="./assets/index-gsx229y2.css"><script type="module" crossorigin src="./assets/index-bm9kn6xw.js"></script></head>
   <body>
     <div
       data-generated-space-root=""
@@ -200,30 +200,9 @@
                 return;
               }
 
-              const placements = [
-                { name: "hero", anchor: home.querySelector("section.home-hero") },
-                { name: "freemium", anchor: home.querySelector("section.freemium-strip") },
-              ];
-
+              // Advertising placeholders are rendered by React at the end of each eligible screen.
+              // Remove slots left behind by older home-only builds so they cannot interrupt content.
               allSlots.forEach((slot) => {
-                try {
-                  const position = slot.getAttribute(AD_ATTRIBUTE);
-                  const placement = placements.find((item) => item.name === position);
-                  if (!placement || !placement.anchor || !home.contains(slot)) slot.remove();
-                } catch (_) {}
-              });
-
-              placements.forEach((placement) => {
-                try {
-                  if (!placement.anchor) return;
-                  const matching = Array.from(home.querySelectorAll(`.ad-slot[${AD_ATTRIBUTE}="${placement.name}"]`));
-                  matching.slice(1).forEach((slot) => slot.remove());
-                  const slot = matching[0] || createAdSlot(placement.name);
-                  if (slot && placement.anchor.nextElementSibling !== slot) placement.anchor.insertAdjacentElement("afterend", slot);
-                } catch (_) {}
-              });
-
-              Array.from(home.querySelectorAll(`.ad-slot[${AD_ATTRIBUTE}]`)).slice(2).forEach((slot) => {
                 try { slot.remove(); } catch (_) {}
               });
 
