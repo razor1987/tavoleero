@@ -178,6 +178,12 @@ export interface MPGame {
   sGroups: SyncAnswerGroup[]; // gruppi proposti / finali
 }
 
+export interface ChatMessage {
+  from: string; // nome del seat al momento dell'invio
+  text: string; // 1-200 caratteri
+  at: number; // timestamp server
+}
+
 export interface Room {
   code: string; // 6 cifre
   seats: Seat[]; // indice seat = indice giocatore
@@ -185,6 +191,7 @@ export interface Room {
   lastActivity: number;
   game: MPGame | null; // null = lobby
   hostPremium: boolean;
+  chat: ChatMessage[]; // effimera: vive e muore con la stanza (max 50)
 }
 
 export interface IntentError {
@@ -204,6 +211,7 @@ export interface View {
     code: string;
     me: number;
     seats: { name: string; connected: boolean; isHost: boolean }[];
+    chat: ChatMessage[];
   };
   game: null | {
     kind: GameKind;
@@ -383,6 +391,7 @@ export class RoomManager {
       lastActivity: now,
       game: null,
       hostPremium: premium === true,
+      chat: [],
     };
     this.rooms.set(room.code, room);
     return { ok: true, room, seat: 0, view: getView(room, 0, now) };
@@ -567,6 +576,14 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
   switch (t) {
     case "leaveRoom": {
       markDisconnected(room, seat, now);
+      return { ok: true, changed: true };
+    }
+    case "chat": {
+      // Chat di stanza: funziona in lobby e durante la partita.
+      const text = String(msg.text ?? "").trim().slice(0, 200);
+      if (!text) return fail("INVALID", "Messaggio vuoto");
+      room.chat.push({ from: me.name, text, at: now });
+      if (room.chat.length > 50) room.chat.splice(0, room.chat.length - 50);
       return { ok: true, changed: true };
     }
     case "startGame":
@@ -1004,6 +1021,7 @@ export function getView(room: Room, seat: number, now: number): View {
       code: room.code,
       me: seat,
       seats: room.seats.map((s) => ({ name: s.name, connected: s.connected, isHost: s.isHost })),
+      chat: room.chat.map((m) => ({ ...m })),
     },
     game: null,
   };
