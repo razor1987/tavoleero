@@ -597,6 +597,7 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
     case "award":
     case "nextRound":
     case "toLobby":
+    case "cancelGame":
     case "sAnswer":
     case "sSplit":
     case "sMerge":
@@ -739,6 +740,12 @@ export function handleIntent(room: Room, seat: number, msg: any, now: number): I
       const sintoniaExit = game.kind === "sintonia" && (game.phase === "sReveal" || game.phase === "sWinner");
       if (game.phase !== "results" && !sintoniaExit)
         return fail("BAD_PHASE", "Non si può tornare alla lobby da qui");
+      room.game = null;
+      return { ok: true, changed: true };
+    }
+    case "cancelGame": {
+      // L'host può annullare la partita in qualsiasi momento (es. giocatore disconnesso).
+      if (!me.isHost) return fail("NOT_HOST", "Solo l'host può annullare la partita");
       room.game = null;
       return { ok: true, changed: true };
     }
